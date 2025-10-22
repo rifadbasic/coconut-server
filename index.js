@@ -4,7 +4,7 @@ const app = express();
 const dotenv = require("dotenv");
 dotenv.config();
 const port = process.env.PORT || 5000;
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 // Middleware
 app.use(cors());
@@ -35,30 +35,34 @@ async function run() {
     // ✅ Get all products with pagination support
     app.get("/products", async (req, res) => {
       try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = 10;
         const search = req.query.search || "";
+        const page = parseInt(req.query.page) || 1; // frontend starts at 1
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
 
-        const query = {
-          name: { $regex: search, $options: "i" },
-        };
+        // build query
+        const query = search ? { name: { $regex: search, $options: "i" } } : {};
 
-        const total = await coconutCollection.countDocuments(query);
+        const totalProducts = await coconutCollection.countDocuments(query);
+        const totalPages = Math.ceil(totalProducts / limit);
+
         const products = await coconutCollection
           .find(query)
-          .skip((page - 1) * limit)
+          .skip(skip)
           .limit(limit)
           .toArray();
 
-        res.send({
+        res.json({
+          success: true,
           products,
-          total,
+          totalPages,
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
         });
       } catch (error) {
-        console.error("Error fetching products:", error);
-        res.status(500).send({ message: "Failed to load products" });
+        console.error("❌ Error fetching products:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch products" });
       }
     });
 
@@ -76,7 +80,32 @@ async function run() {
       }
     });
 
-    // 🗑️ Delete Product
+    // 🔹 Update product
+    app.put("/products/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id))
+          return res.status(400).json({ message: "Invalid ID" });
+
+        const updateData = req.body;
+        delete updateData._id;
+
+        const result = await coconutCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        if (result.matchedCount === 0)
+          return res.status(404).json({ message: "Product not found" });
+
+        res.json({ success: true, message: "Product updated successfully" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to update product" });
+      }
+    });
+
+    // 🔹 Delete product
     app.delete("/products/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -86,37 +115,19 @@ async function run() {
         const result = await coconutCollection.deleteOne({
           _id: new ObjectId(id),
         });
+
         if (result.deletedCount === 0)
           return res.status(404).json({ message: "Product not found" });
 
-        res.json({
-          message: "Product deleted successfully",
-          deletedCount: result.deletedCount,
-        });
+        res.json({ success: true, message: "Product deleted successfully" });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Failed to delete product" });
       }
     });
 
-    // ✏️ Update Product
-    app.put("/:id", async (req, res) => {
-      try {
-        const db = getDB();
-        const id = req.params.id;
-        const updatedProduct = req.body;
-        const result = await db
-          .coconutCollection("products")
-          .updateOne({ _id: new ObjectId(id) }, { $set: updatedProduct });
-        res.json(result);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Failed to update product" });
-      }
-    });
-
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
