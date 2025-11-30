@@ -67,17 +67,65 @@ async function run() {
       }
     });
 
-    // ✅ Add Product API
-    app.post("/products", async (req, res) => {
+    app.get("/products/:id", async (req, res) => {
       try {
-        const product = req.body;
-        const result = await coconutCollection.insertOne(product);
-        res.send({ success: true, result });
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id))
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid ID" });
+
+        const product = await coconutCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (product) {
+          res.json({ success: true, product });
+        } else {
+          res
+            .status(404)
+            .json({ success: false, message: "Product not found" });
+        }
       } catch (error) {
-        console.error(error);
+        console.error("❌ Error fetching product:", error);
         res
           .status(500)
-          .send({ success: false, message: "Failed to add product" });
+          .json({ success: false, message: "Failed to fetch product" });
+      }
+    });
+
+    // Example: /products?category=xyz
+    app.get("/products/category", async (req, res) => {
+      try {
+        const { category } = req.query;
+        let query = {};
+        if (category) query.category = category;
+
+        const products = await coconutCollection.find(query).toArray();
+        res.json({ success: true, products });
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch products" });
+      }
+    });
+
+    // ✅ Add Product API
+    app.get("/products/", async (req, res) => {
+      try {
+        const { category } = req.query;
+        let query = {};
+        if (category) query.category = category;
+
+        const products = await coconutCollection.find(query).toArray();
+        res.json({ success: true, products });
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch products" });
       }
     });
 
