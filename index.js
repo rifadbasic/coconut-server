@@ -29,6 +29,7 @@ async function run() {
 
     const database = client.db("coconutDB");
     const coconutCollection = database.collection("products");
+    const orderCollection = database.collection("orders");
 
     //back office api start here
 
@@ -66,7 +67,6 @@ async function run() {
       }
     });
 
-    
     // ✅ Add Product API
     app.post("/products", async (req, res) => {
       try {
@@ -124,6 +124,165 @@ async function run() {
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Failed to delete product" });
+      }
+    });
+
+    // for order
+
+    // orders API
+    app.post("/orders", async (req, res) => {
+      try {
+        const order = req.body;
+
+        // Check: invoice must be unique
+        const existingInvoice = await orderCollection.findOne({
+          invoiceNumber: order.invoiceNumber,
+        });
+
+        if (existingInvoice) {
+          return res.send({
+            success: false,
+            message: "Invoice number already exists!",
+          });
+        }
+
+        // Insert into DB
+        const result = await orderCollection.insertOne(order);
+
+        res.send({
+          success: true,
+          message: "Order created successfully",
+          orderId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Order Error:", error);
+        res.status(500).send({
+          success: false,
+          message: "Failed to create order",
+          error: error.message,
+        });
+      }
+    });
+
+    // ✅ Get all orders
+    app.get("/orders", async (req, res) => {
+      try {
+        const search = req.query.search || "";
+        const status = req.query.status || "";
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const query = {};
+
+        if (search) {
+          query.$or = [
+            { name: { $regex: search, $options: "i" } },
+            { phone: { $regex: search, $options: "i" } },
+            { invoiceNumber: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        if (status) {
+          query.status = status;
+        }
+
+        const totalOrders = await orderCollection.countDocuments(query);
+        const totalPages = Math.ceil(totalOrders / limit);
+
+        const orders = await orderCollection
+          .find(query)
+          .skip(skip)
+          .limit(limit)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          orders,
+          totalPages,
+          currentPage: page,
+        });
+      } catch (error) {
+        console.error("❌ Error fetching orders:", error);
+        res.status(500).json({
+          success: false,
+          message: "Failed to fetch orders",
+        });
+      }
+    });
+
+    // 🔹 Update order
+    app.put("/orders/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const updateData = {
+          name: req.body.name,
+          email: req.body.email,
+          phone: req.body.phone,
+          address: req.body.address,
+          invoiceNumber: req.body.invoiceNumber,
+          deliveryCharge: req.body.deliveryCharge,
+          finalTotal: req.body.finalTotal,
+          status: req.body.status,
+        };
+
+        const result = await orderCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        res.json({ success: true, message: "Order updated", result });
+      } catch (error) {
+        res.status(500).json({ success: false, message: "Update failed" });
+      }
+    });
+
+    // 🔹 Delete order
+    app.delete("/orders/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id))
+          return res.status(400).json({ message: "Invalid ID" });
+
+        const result = await orderCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 0)
+          return res.status(404).json({ message: "Order not found" });
+
+        res.json({ success: true, message: "Order deleted successfully" });
+      } catch (error) {
+        console.error("❌ Error deleting order:", error);
+        res.status(500).json({
+          success: false,
+          message: "Failed to delete order",
+        });
+      }
+    });
+
+    // update status
+    app.patch("/orders/confirm/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const result = await orderCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "confirmed" } }
+        );
+
+        if (result.modifiedCount === 1) {
+          return res.send({ success: true, message: "Order confirmed" });
+        } else {
+          return res.send({ success: false, message: "Order not found" });
+        }
+      } catch (error) {
+        console.log(error);
+        res
+          .status(500)
+          .send({ success: false, message: "Server error", error });
       }
     });
 
