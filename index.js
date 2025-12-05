@@ -112,7 +112,66 @@ async function run() {
       }
     });
 
-    // ✅ Add Product API
+    app.post("/products", async (req, res) => {
+      try {
+        const {
+          img,
+          name,
+          shortDesc,
+          country,
+          category,
+          stock,
+          discount,
+          price,
+          weight,
+        } = req.body;
+
+        // Required validation
+        if (!img || !name || !price) {
+          return res.status(400).json({
+            success: false,
+            message: "Image, Name & Price are required!",
+          });
+        }
+
+        // Calculate Final Price
+        const finalPrice =
+          Number(price) - (Number(price) * Number(discount)) / 100;
+
+        // Build product object
+        const newProduct = {
+          img,
+          name,
+          shortDesc,
+          country,
+          category,
+          stock: Number(stock),
+          discount: Number(discount),
+          price: Number(price),
+          finalPrice, // 💥 SAVING IN DATABASE
+          weight,
+          createdAt: new Date(),
+        };
+
+        // Insert
+        const result = await coconutCollection.insertOne(newProduct);
+
+        res.json({
+          success: true,
+          message: "Product inserted successfully",
+          insertedId: result.insertedId,
+          product: newProduct,
+        });
+      } catch (error) {
+        console.error("Product Save Error:", error);
+        res.status(500).json({
+          success: false,
+          message: "Failed to save product.",
+        });
+      }
+    });
+
+    // get all products
     app.get("/products/", async (req, res) => {
       try {
         const { category } = req.query;
@@ -129,27 +188,45 @@ async function run() {
       }
     });
 
-    // 🔹 Update product
+    // 🔹 Update product WITHOUT saving finalPrice to DB
     app.put("/products/:id", async (req, res) => {
       try {
         const { id } = req.params;
-        if (!ObjectId.isValid(id))
-          return res.status(400).json({ message: "Invalid ID" });
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ message: "Invalid product ID" });
+        }
 
         const updateData = req.body;
+
+        // ❌ NEVER store _id coming from client
         delete updateData._id;
 
+        // ❌ ALWAYS remove finalPrice coming from frontend
+        delete updateData.finalPrice;
+
+        // 🧮 Calculate updated finalPrice (for response only)
+        const price = Number(updateData.price) || 0;
+        const discount = Number(updateData.discount) || 0;
+        const calculatedFinalPrice = price - (price * discount) / 100;
+
+        // 🔥 Update DB (finalPrice NOT saved)
         const result = await coconutCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: updateData }
         );
 
-        if (result.matchedCount === 0)
+        if (result.matchedCount === 0) {
           return res.status(404).json({ message: "Product not found" });
+        }
 
-        res.json({ success: true, message: "Product updated successfully" });
+        res.json({
+          success: true,
+          message: "Product updated successfully",
+          finalPrice: calculatedFinalPrice,
+        });
       } catch (error) {
-        console.error(error);
+        console.error("Product update error:", error);
         res.status(500).json({ message: "Failed to update product" });
       }
     });
