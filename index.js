@@ -36,34 +36,61 @@ async function run() {
     // ✅ Get all products with pagination support
     app.get("/products", async (req, res) => {
       try {
+        // 🔹 QUERY PARAMS
         const search = req.query.search || "";
-        const page = parseInt(req.query.page) || 1; // frontend starts at 1
+        const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
+        const category = req.query.category; // Food,Cosmetics
+        const sort = req.query.sort; // price_asc | price_desc
+
         const skip = (page - 1) * limit;
 
-        // build query
-        const query = search ? { name: { $regex: search, $options: "i" } } : {};
+        // 🔹 FILTER QUERY
+        const query = {};
 
+        // search by name
+        if (search) {
+          query.name = { $regex: search, $options: "i" };
+        }
+
+        // filter by category (multiple)
+        if (category) {
+          query.category = {
+            $in: category.split(","), // ✅ IMPORTANT FIX
+          };
+        }
+
+        // 🔹 SORT QUERY
+        let sortQuery = {};
+        if (sort === "price_asc") sortQuery.price = 1;
+        if (sort === "price_desc") sortQuery.price = -1;
+
+        // 🔹 TOTAL COUNT
         const totalProducts = await coconutCollection.countDocuments(query);
-        const totalPages = Math.ceil(totalProducts / limit);
 
+        // 🔹 FETCH PRODUCTS
         const products = await coconutCollection
           .find(query)
+          .sort(sortQuery) // ✅ FIX
           .skip(skip)
           .limit(limit)
           .toArray();
 
+        // 🔹 HAS MORE (for infinite scroll)
+        const hasMore = skip + products.length < totalProducts;
+
         res.json({
           success: true,
           products,
-          totalPages,
+          hasMore, // ✅ FIX
           currentPage: page,
         });
       } catch (error) {
         console.error("❌ Error fetching products:", error);
-        res
-          .status(500)
-          .json({ success: false, message: "Failed to fetch products" });
+        res.status(500).json({
+          success: false,
+          message: "Failed to fetch products",
+        });
       }
     });
 
