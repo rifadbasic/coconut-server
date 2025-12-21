@@ -62,8 +62,8 @@ async function run() {
 
         // 🔹 SORT QUERY
         let sortQuery = {};
-        if (sort === "price_asc") sortQuery.price = 1;
-        if (sort === "price_desc") sortQuery.price = -1;
+        if (sort === "price_asc") sortQuery.finalPrice = 1;
+        if (sort === "price_desc") sortQuery.finalPrice = -1;
 
         // 🔹 TOTAL COUNT
         const totalProducts = await coconutCollection.countDocuments(query);
@@ -139,51 +139,101 @@ async function run() {
       }
     });
 
+    // 🔍 Product Search API
+    // 🔍 Product Search API
+    app.get("/search", async (req, res) => {
+      try {
+        const q = req.query.q;
+
+        // ❗ NEVER throw 400 for search
+        if (!q || !q.trim()) {
+          return res.json({
+            success: true,
+            products: [],
+          });
+        }
+
+        const products = await coconutCollection
+          .find({
+            name: { $regex: q.trim(), $options: "i" },
+          })
+          .limit(20)
+          .toArray();
+
+        res.json({
+          success: true,
+          products,
+        });
+      } catch (error) {
+        console.error("Search error:", error);
+        res.status(500).json({
+          success: false,
+          message: "Search failed",
+        });
+      }
+    });
+
     app.post("/products", async (req, res) => {
       try {
         const {
           img,
           name,
           shortDesc,
+          brand,
           country,
           category,
-          stock,
-          discount,
+          stock = 0,
           price,
-          weight,
+          discount = 0,
+          status = "In Stock",
+          description = [],
         } = req.body;
 
-        // Required validation
-        if (!img || !name || !price) {
+        // 🛑 Required validation
+        if (!img || !name || price == null) {
           return res.status(400).json({
             success: false,
             message: "Image, Name & Price are required!",
           });
         }
 
-        // Calculate Final Price
-        const finalPrice =
-          Number(price) - (Number(price) * Number(discount)) / 100;
+        // 🔐 SAFE number casting
+        const safePrice = Number(price);
+        const safeDiscount = Number(discount);
+        const safeStock = Number(stock);
 
-        // Build product object
+        // 🔢 FINAL PRICE (server-controlled)
+        const finalPrice = Math.max(
+          safePrice - (safePrice * safeDiscount) / 100,
+          0
+        );
+
+        // 🧼 Clean description list
+        const cleanDescription = Array.isArray(description)
+          ? description.filter((d) => d && d.trim() !== "")
+          : [];
+
+        // 📦 Build product object
         const newProduct = {
           img,
           name,
-          shortDesc,
-          country,
+          shortDesc: shortDesc || "",
+          brand: brand || "",
+          country: country || "",
           category,
-          stock: Number(stock),
-          discount: Number(discount),
-          price: Number(price),
-          finalPrice, // 💥 SAVING IN DATABASE
-          weight,
+          stock: safeStock,
+          price: safePrice,
+          discount: safeDiscount,
+          finalPrice: Number(finalPrice.toFixed(2)),
+          status,
+          description: cleanDescription,
           createdAt: new Date(),
         };
 
-        // Insert
+        // 💾 Insert into DB
         const result = await coconutCollection.insertOne(newProduct);
 
-        res.json({
+        res.status(201).json({
           success: true,
           message: "Product inserted successfully",
           insertedId: result.insertedId,
