@@ -438,30 +438,70 @@ async function run() {
       }
     });
 
-    // 🔹 Update order
+    // 🔹 Update Order (FULL CONTROL)
+    // 🔹 Update Order (NO STOCK CHANGE)
     app.put("/orders/:id", async (req, res) => {
       try {
         const { id } = req.params;
 
-        const updateData = {
-          name: req.body.name,
-          email: req.body.email,
-          phone: req.body.phone,
-          address: req.body.address,
-          invoiceNumber: req.body.invoiceNumber,
-          deliveryCharge: req.body.deliveryCharge,
-          finalTotal: req.body.finalTotal,
-          status: req.body.status,
-        };
+        const {
+          name,
+          email,
+          phone,
+          address,
+          cartItems,
+          deliveryCharge = 0,
+          orderDiscount = 0,
+          status,
+        } = req.body;
 
-        const result = await orderCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updateData }
+        // 🧮 Calculate subtotal
+        const subtotal = cartItems.reduce((sum, item) => {
+          const finalPrice = Math.round(
+            item.price - (item.price * item.discount) / 100
+          );
+          return sum + finalPrice * item.quantity;
+        }, 0);
+
+        // 💸 Discount
+        const discountAmount = Math.round(
+          (subtotal * Number(orderDiscount)) / 100
         );
 
-        res.json({ success: true, message: "Order updated", result });
+        // 🧾 Final total
+        const finalTotal = subtotal - discountAmount + Number(deliveryCharge);
+
+        // ✅ Update ONLY order
+        const result = await orderCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              name,
+              email,
+              phone,
+              address,
+              cartItems,
+              deliveryCharge,
+              orderDiscount,
+              finalTotal,
+              status,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        res.json({
+          success: true,
+          message: "Order updated successfully",
+          finalTotal,
+          result,
+        });
       } catch (error) {
-        res.status(500).json({ success: false, message: "Update failed" });
+        console.error(error);
+        res.status(500).json({
+          success: false,
+          message: "Failed to update order",
+        });
       }
     });
 
