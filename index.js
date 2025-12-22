@@ -27,8 +27,8 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     // await client.connect();
 
-    const database = client.db("coconutDB");
-    const coconutCollection = database.collection("products");
+    const database = client.db("BeautyCareDB");
+    const productCollection = database.collection("products");
     const orderCollection = database.collection("orders");
 
     //back office api start here
@@ -36,54 +36,75 @@ async function run() {
     // ✅ Get all products with pagination support
     app.get("/products", async (req, res) => {
       try {
-        // 🔹 QUERY PARAMS
-        const search = req.query.search || "";
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const category = req.query.category; // Food,Cosmetics
-        const sort = req.query.sort; // price_asc | price_desc
+        // ================= QUERY PARAMS =================
+        const {
+          search = "",
+          page = 1,
+          limit = 10,
+          category,
+          sort,
+          status,
+          brand,
+        } = req.query;
 
-        const skip = (page - 1) * limit;
+        const currentPage = Math.max(parseInt(page), 1);
+        const perPage = Math.max(parseInt(limit), 1);
+        const skip = (currentPage - 1) * perPage;
 
-        // 🔹 FILTER QUERY
+        // ================= FILTER QUERY =================
         const query = {};
 
-        // search by name
-        if (search) {
+        // 🔍 Search by name (optional)
+        if (search.trim()) {
           query.name = { $regex: search, $options: "i" };
         }
 
-        // filter by category (multiple)
+        // 🧴 Category filter (multiple)
         if (category) {
           query.category = {
-            $in: category.split(","), // ✅ IMPORTANT FIX
+            $in: category.split(","),
           };
         }
 
-        // 🔹 SORT QUERY
-        let sortQuery = {};
-        if (sort === "price_asc") sortQuery.finalPrice = 1;
-        if (sort === "price_desc") sortQuery.finalPrice = -1;
+        // 🏷️ Brand filter (optional, future-proof)
+        if (brand) {
+          query.brand = brand;
+        }
 
-        // 🔹 TOTAL COUNT
-        const totalProducts = await coconutCollection.countDocuments(query);
+        // 📦 Status filter (optional)
+        if (status) {
+          query.status = status;
+        }
 
-        // 🔹 FETCH PRODUCTS
-        const products = await coconutCollection
+        // ================= SORT QUERY =================
+        let sortQuery = { createdAt: -1 }; // default: newest first
+
+        if (sort === "price_asc") {
+          sortQuery = { finalPrice: 1 };
+        } else if (sort === "price_desc") {
+          sortQuery = { finalPrice: -1 };
+        }
+
+        // ================= COUNT =================
+        const totalProducts = await productCollection.countDocuments(query);
+
+        // ================= FETCH =================
+        const products = await productCollection
           .find(query)
-          .sort(sortQuery) // ✅ FIX
+          .sort(sortQuery)
           .skip(skip)
-          .limit(limit)
+          .limit(perPage)
           .toArray();
 
-        // 🔹 HAS MORE (for infinite scroll)
+        // ================= PAGINATION =================
         const hasMore = skip + products.length < totalProducts;
 
         res.json({
           success: true,
           products,
-          hasMore, // ✅ FIX
-          currentPage: page,
+          hasMore,
+          currentPage,
+          totalProducts,
         });
       } catch (error) {
         console.error("❌ Error fetching products:", error);
@@ -94,6 +115,7 @@ async function run() {
       }
     });
 
+    // ✅ Get single product by ID
     app.get("/products/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -103,7 +125,7 @@ async function run() {
             .status(400)
             .json({ success: false, message: "Invalid ID" });
 
-        const product = await coconutCollection.findOne({
+        const product = await productCollection.findOne({
           _id: new ObjectId(id),
         });
 
@@ -122,14 +144,14 @@ async function run() {
       }
     });
 
-    // Example: /products?category=xyz
+    // get products by category
     app.get("/products/category", async (req, res) => {
       try {
         const { category } = req.query;
         let query = {};
         if (category) query.category = category;
 
-        const products = await coconutCollection.find(query).toArray();
+        const products = await productCollection.find(query).toArray();
         res.json({ success: true, products });
       } catch (err) {
         console.error(err);
@@ -139,7 +161,6 @@ async function run() {
       }
     });
 
-    // 🔍 Product Search API
     // 🔍 Product Search API
     app.get("/search", async (req, res) => {
       try {
@@ -153,7 +174,7 @@ async function run() {
           });
         }
 
-        const products = await coconutCollection
+        const products = await productCollection
           .find({
             name: { $regex: q.trim(), $options: "i" },
           })
@@ -173,6 +194,7 @@ async function run() {
       }
     });
 
+    // ✅ Add Product
     app.post("/products", async (req, res) => {
       try {
         const {
@@ -231,7 +253,7 @@ async function run() {
         };
 
         // 💾 Insert into DB
-        const result = await coconutCollection.insertOne(newProduct);
+        const result = await productCollection.insertOne(newProduct);
 
         res.status(201).json({
           success: true,
@@ -255,7 +277,7 @@ async function run() {
         let query = {};
         if (category) query.category = category;
 
-        const products = await coconutCollection.find(query).toArray();
+        const products = await productCollection.find(query).toArray();
         res.json({ success: true, products });
       } catch (err) {
         console.error(err);
@@ -288,7 +310,7 @@ async function run() {
         const calculatedFinalPrice = price - (price * discount) / 100;
 
         // 🔥 Update DB (finalPrice NOT saved)
-        const result = await coconutCollection.updateOne(
+        const result = await productCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: updateData }
         );
@@ -315,7 +337,7 @@ async function run() {
         if (!ObjectId.isValid(id))
           return res.status(400).json({ message: "Invalid ID" });
 
-        const result = await coconutCollection.deleteOne({
+        const result = await productCollection.deleteOne({
           _id: new ObjectId(id),
         });
 
@@ -328,6 +350,8 @@ async function run() {
         res.status(500).json({ message: "Failed to delete product" });
       }
     });
+
+    // --------------------------------------------
 
     // for order
 
