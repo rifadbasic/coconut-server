@@ -33,7 +33,7 @@ async function run() {
 
     //back office api start here
 
-    // ✅ Get all products with pagination support
+    // ✅ Get all products with pagination support for client-side
     app.get("/products", async (req, res) => {
       try {
         // ================= QUERY PARAMS =================
@@ -109,6 +109,52 @@ async function run() {
       } catch (error) {
         console.error("❌ Error fetching products:", error);
         res.status(500).json({
+          success: false,
+          message: "Failed to fetch products",
+        });
+      }
+    });
+
+    // GET /products
+    app.get("/items", async (req, res) => {
+      try {
+        const search = req.query.search || "";
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        // 🔍 Multi-field search condition
+        const query = search
+          ? {
+              $or: [
+                { name: { $regex: search, $options: "i" } },
+                { category: { $regex: search, $options: "i" } },
+                { status: { $regex: search, $options: "i" } },
+              ],
+            }
+          : {};
+
+        // 📦 Total count
+        const totalCount = await productCollection.countDocuments(query);
+
+        // 📄 Products
+        const products = await productCollection
+          .find(query)
+          .sort({ createdAt: -1 }) // newest first
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.send({
+          success: true,
+          products,
+          totalCount,
+          totalPages: Math.ceil(totalCount / limit),
+          currentPage: page,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({
           success: false,
           message: "Failed to fetch products",
         });
@@ -207,7 +253,7 @@ async function run() {
           stock = 0,
           price,
           discount = 0,
-          status = "In Stock",
+          status = "body care",
           description = [],
         } = req.body;
 
@@ -291,41 +337,45 @@ async function run() {
     app.put("/products/:id", async (req, res) => {
       try {
         const { id } = req.params;
-
         if (!ObjectId.isValid(id)) {
           return res.status(400).json({ message: "Invalid product ID" });
         }
 
-        const updateData = req.body;
+        const data = req.body;
 
-        // ❌ NEVER store _id coming from client
-        delete updateData._id;
+        // ❌ Never trust client
+        delete data._id;
+        delete data.finalPrice;
 
-        // ❌ ALWAYS remove finalPrice coming from frontend
-        delete updateData.finalPrice;
+        // 🧮 Normalize numbers
+        data.stock = Number(data.stock);
+        data.price = Number(data.price);
+        data.discount = Number(data.discount);
 
-        // 🧮 Calculate updated finalPrice (for response only)
-        const price = Number(updateData.price) || 0;
-        const discount = Number(updateData.discount) || 0;
-        const calculatedFinalPrice = price - (price * discount) / 100;
+        if (isNaN(data.stock) || isNaN(data.price)) {
+          return res.status(400).json({ message: "Invalid numeric values" });
+        }
 
-        // 🔥 Update DB (finalPrice NOT saved)
+        // 🧮 Calculate final price
+        data.finalPrice = data.price - (data.price * data.discount) / 100;
+
+        // 🔥 Update
         const result = await productCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: updateData }
+          { $set: data }
         );
 
-        if (result.matchedCount === 0) {
+        if (!result.matchedCount) {
           return res.status(404).json({ message: "Product not found" });
         }
 
         res.json({
           success: true,
           message: "Product updated successfully",
-          finalPrice: calculatedFinalPrice,
+          finalPrice: data.finalPrice,
         });
-      } catch (error) {
-        console.error("Product update error:", error);
+      } catch (err) {
+        console.error("Product update error:", err);
         res.status(500).json({ message: "Failed to update product" });
       }
     });
@@ -356,36 +406,77 @@ async function run() {
     // for order
 
     // orders API
+    // 🔹 Create Order + Update Product Stock
     app.post("/orders", async (req, res) => {
       try {
         const order = req.body;
 
-        // Check: invoice must be unique
+        // 🔐 Invoice check
         const existingInvoice = await orderCollection.findOne({
           invoiceNumber: order.invoiceNumber,
         });
 
         if (existingInvoice) {
-          return res.send({
+          return res.status(400).send({
             success: false,
             message: "Invoice number already exists!",
           });
         }
 
-        // Insert into DB
-        const result = await orderCollection.insertOne(order);
+        // 🔍 STOCK CHECK
+        for (const item of order.cartItems) {
+          const product = await productCollection.findOne({
+            _id: new ObjectId(item._id),
+          });
+
+          if (!product) {
+            return res.status(404).send({
+              success: false,
+              message: `Product not found: ${item.name}`,
+            });
+          }
+
+          const stock = Number(product.stock);
+          const qty = Number(item.quantity);
+
+          if (stock < qty) {
+            return res.status(400).send({
+              success: false,
+              message: `Insufficient stock for ${item.name}`,
+            });
+          }
+        }
+
+        // ✅ SAVE ORDER
+        const result = await orderCollection.insertOne({
+          ...order,
+          status: "pending",
+          createdAt: new Date(),
+        });
+
+        // 🔻 SAFE STOCK UPDATE
+        for (const item of order.cartItems) {
+          await productCollection.updateOne({ _id: new ObjectId(item._id) }, [
+            {
+              $set: {
+                stock: {
+                  $subtract: [{ $toInt: "$stock" }, Number(item.quantity)],
+                },
+              },
+            },
+          ]);
+        }
 
         res.send({
           success: true,
-          message: "Order created successfully",
           orderId: result.insertedId,
+          message: "Order placed successfully",
         });
       } catch (error) {
-        console.error("Order Error:", error);
+        console.error("❌ Order Error:", error);
         res.status(500).send({
           success: false,
           message: "Failed to create order",
-          error: error.message,
         });
       }
     });
@@ -406,6 +497,7 @@ async function run() {
             { name: { $regex: search, $options: "i" } },
             { phone: { $regex: search, $options: "i" } },
             { invoiceNumber: { $regex: search, $options: "i" } },
+            { status: { $regex: search, $options: "i" } },
           ];
         }
 
@@ -502,6 +594,112 @@ async function run() {
           success: false,
           message: "Failed to update order",
         });
+      }
+    });
+
+    // 🔹 Cancel Order + Restore Product Stock
+    app.patch("/orders/cancel/:id", async (req, res) => {
+      try {
+        const orderId = req.params.id;
+
+        const order = await orderCollection.findOne({
+          _id: new ObjectId(orderId),
+        });
+
+        // console.log(order.cartItems)
+
+        if (!order) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Order not found" });
+        }
+
+        if (order.status === "canceled") {
+          return res
+            .status(400)
+            .json({ success: false, message: "Order already canceled" });
+        }
+
+        // 🔄 Restore stock for each product in the order
+        for (const item of order.cartItems) {
+          await productCollection.updateOne(
+            { _id: new ObjectId(item._id) },
+            {
+              $inc: { stock: item.quantity }, // increase stock
+            }
+          );
+        }
+
+        // 🟥 Update order status
+        await orderCollection.updateOne(
+          { _id: new ObjectId(orderId) },
+          {
+            $set: { status: "canceled", canceledAt: new Date() },
+          }
+        );
+
+        res.json({
+          success: true,
+          message: "Order canceled and stock restored successfully",
+        });
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to cancel order" });
+      }
+    });
+
+    // return single order
+    app.patch("/orders/return/:id", async (req, res) => {
+      try {
+        const orderId = req.params.id;
+
+        const order = await orderCollection.findOne({
+          _id: new ObjectId(orderId),
+        });
+
+        // console.log(order.cartItems)
+
+        if (!order) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Order not found" });
+        }
+
+        if (order.status === "returned") {
+          return res
+            .status(400)
+            .json({ success: false, message: "Order already returned" });
+        }
+
+        // 🔄 Restore stock for each product in the order
+        for (const item of order.cartItems) {
+          await productCollection.updateOne(
+            { _id: new ObjectId(item._id) },
+            {
+              $inc: { stock: item.quantity }, // increase stock
+            }
+          );
+        }
+
+        // 🟥 Update order status
+        await orderCollection.updateOne(
+          { _id: new ObjectId(orderId) },
+          {
+            $set: { status: "returned", returnedAt: new Date() },
+          }
+        );
+
+        res.json({
+          success: true,
+          message: "Order returned and stock restored successfully",
+        });
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to return order" });
       }
     });
 
