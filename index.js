@@ -66,7 +66,7 @@ async function run() {
           };
         }
 
-        // 🏷️ Brand filter (optional, future-proof)
+        // 🏷️ Brand filter (optional)
         if (brand) {
           query.brand = brand;
         }
@@ -77,12 +77,13 @@ async function run() {
         }
 
         // ================= SORT QUERY =================
-        let sortQuery = { createdAt: -1 }; // default: newest first
+        // First sort by stock descending (in-stock first)
+        let sortQuery = { stock: -1, createdAt: -1 }; // default: in-stock first, then newest
 
         if (sort === "price_asc") {
-          sortQuery = { finalPrice: 1 };
+          sortQuery = { stock: -1, finalPrice: 1 }; // in-stock first, then price low→high
         } else if (sort === "price_desc") {
-          sortQuery = { finalPrice: -1 };
+          sortQuery = { stock: -1, finalPrice: -1 }; // in-stock first, then price high→low
         }
 
         // ================= COUNT =================
@@ -253,7 +254,7 @@ async function run() {
           stock = 0,
           price,
           discount = 0,
-          status = "body care",
+          status = "regular",
           description = [],
         } = req.body;
 
@@ -426,7 +427,7 @@ async function run() {
         // 🔍 STOCK CHECK
         for (const item of order.cartItems) {
           const product = await productCollection.findOne({
-            _id: new ObjectId(item._id),
+            _id: new ObjectId(item.productId), // note: frontend sends productId
           });
 
           if (!product) {
@@ -456,15 +457,18 @@ async function run() {
 
         // 🔻 SAFE STOCK UPDATE
         for (const item of order.cartItems) {
-          await productCollection.updateOne({ _id: new ObjectId(item._id) }, [
-            {
-              $set: {
-                stock: {
-                  $subtract: [{ $toInt: "$stock" }, Number(item.quantity)],
+          await productCollection.updateOne(
+            { _id: new ObjectId(item.productId) },
+            [
+              {
+                $set: {
+                  stock: {
+                    $subtract: [{ $toInt: "$stock" }, Number(item.quantity)],
+                  },
                 },
               },
-            },
-          ]);
+            ]
+          );
         }
 
         res.send({
@@ -494,8 +498,8 @@ async function run() {
 
         if (search) {
           query.$or = [
-            { name: { $regex: search, $options: "i" } },
-            { phone: { $regex: search, $options: "i" } },
+            { "customer.name": { $regex: search, $options: "i" } },
+            { "customer.phone": { $regex: search, $options: "i" } },
             { invoiceNumber: { $regex: search, $options: "i" } },
             { status: { $regex: search, $options: "i" } },
           ];
@@ -535,47 +539,59 @@ async function run() {
     app.put("/orders/:id", async (req, res) => {
       try {
         const { id } = req.params;
+        const { customer, cartItems, pricing, status, originalItems } =
+          req.body;
 
-        const {
-          name,
-          email,
-          phone,
-          address,
-          cartItems,
-          deliveryCharge = 0,
-          orderDiscount = 0,
-          status,
-        } = req.body;
-
-        // 🧮 Calculate subtotal
-        const subtotal = cartItems.reduce((sum, item) => {
-          const finalPrice = Math.round(
-            item.price - (item.price * item.discount) / 100
+        // 🔁 STEP 1: Restore stock for removed items
+        for (const oldItem of originalItems) {
+          const updatedItem = cartItems.find(
+            (i) => (i.productId || i._id).toString() === oldItem._id.toString()
           );
-          return sum + finalPrice * item.quantity;
-        }, 0);
 
-        // 💸 Discount
-        const discountAmount = Math.round(
-          (subtotal * Number(orderDiscount)) / 100
-        );
+          // 🧨 Item removed from order → restore stock
+          if (!updatedItem) {
+            await productCollection.updateOne(
+              { _id: new ObjectId(oldItem._id) },
+              { $inc: { stock: oldItem.quantity } }
+            );
+          }
+        }
 
-        // 🧾 Final total
-        const finalTotal = subtotal - discountAmount + Number(deliveryCharge);
+        // 🔁 STEP 2: Sync changed & new items
+        for (const item of cartItems) {
+          const itemId = item.productId || item._id;
+          const oldItem = originalItems.find(
+            (i) => i._id.toString() === itemId.toString()
+          );
 
-        // ✅ Update ONLY order
-        const result = await orderCollection.updateOne(
+          // 🆕 New item added to order → reduce stock
+          if (!oldItem) {
+            await productCollection.updateOne(
+              { _id: new ObjectId(itemId) },
+              { $inc: { stock: -item.quantity } }
+            );
+            continue;
+          }
+
+          // 🔄 Quantity changed → calculate delta
+          const delta = item.quantity - oldItem.quantity;
+
+          if (delta !== 0) {
+            await productCollection.updateOne(
+              { _id: new ObjectId(itemId) },
+              { $inc: { stock: -delta } } // delta can be positive (increase order → decrease stock) or negative (decrease order → increase stock)
+            );
+          }
+        }
+
+        // ✅ UPDATE ORDER
+        await orderCollection.updateOne(
           { _id: new ObjectId(id) },
           {
             $set: {
-              name,
-              email,
-              phone,
-              address,
+              customer,
               cartItems,
-              deliveryCharge,
-              orderDiscount,
-              finalTotal,
+              pricing,
               status,
               updatedAt: new Date(),
             },
@@ -585,14 +601,12 @@ async function run() {
         res.json({
           success: true,
           message: "Order updated successfully",
-          finalTotal,
-          result,
         });
-      } catch (error) {
-        console.error(error);
+      } catch (err) {
+        console.error(err);
         res.status(500).json({
           success: false,
-          message: "Failed to update order",
+          message: "Order update failed",
         });
       }
     });
@@ -623,7 +637,7 @@ async function run() {
         // 🔄 Restore stock for each product in the order
         for (const item of order.cartItems) {
           await productCollection.updateOne(
-            { _id: new ObjectId(item._id) },
+            { _id: new ObjectId(item.productId) },
             {
               $inc: { stock: item.quantity }, // increase stock
             }
@@ -676,7 +690,7 @@ async function run() {
         // 🔄 Restore stock for each product in the order
         for (const item of order.cartItems) {
           await productCollection.updateOne(
-            { _id: new ObjectId(item._id) },
+            { _id: new ObjectId(item.productId) },
             {
               $inc: { stock: item.quantity }, // increase stock
             }
